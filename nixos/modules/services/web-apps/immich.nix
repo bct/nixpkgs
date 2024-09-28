@@ -222,7 +222,6 @@ in
     services.redis.servers = mkIf cfg.redis.enable {
       immich = {
         enable = true;
-        user = cfg.user;
         port = cfg.redis.port;
         bind = mkIf (!isRedisUnixSocket) cfg.redis.host;
       };
