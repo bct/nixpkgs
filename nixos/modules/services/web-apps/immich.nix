@@ -285,7 +285,7 @@ in
         RuntimeDirectory = "immich";
         User = cfg.user;
         Group = cfg.group;
-        SupplementaryGroups = mkIf (cfg.redis.enable && isRedisUnixSocket) [config.services.redis.servers.immich.user];
+        SupplementaryGroups = mkIf (cfg.redis.enable && isRedisUnixSocket) [config.services.redis.servers.immich.group];
       };
     };
 
