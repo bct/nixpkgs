@@ -34,14 +34,10 @@ let
     else toString s
   ) cfg.settings);
 
-  manage = let
-    maybeSourceSecretsFile = if cfg.secretsFile != null
-      then "source ${cfg.secretsFile}"
-      else "";
-  in pkgs.writeShellScript "manage" ''
+  manage = pkgs.writeShellScript "manage" ''
     set -o allexport # Export the following env vars
     ${lib.toShellVars env}
-    ${maybeSourceSecretsFile}
+    ${lib.optionalString (cfg.environmentFile != null) "source ${cfg.environmentFile}"}
     exec ${cfg.package}/bin/paperless-ngx "$@"
   '';
 
@@ -57,7 +53,7 @@ let
     CapabilityBoundingSet = "";
     # ProtectClock adds DeviceAllow=char-rtc r
     DeviceAllow = "";
-    EnvironmentFile = mkIf (cfg.secretsFile != null) cfg.secretsFile;
+    EnvironmentFile = mkIf (cfg.environmentFile != null) cfg.environmentFile;
     LockPersonality = true;
     MemoryDenyWriteExecute = true;
     NoNewPrivileges = true;
@@ -235,21 +231,18 @@ in
       https://github.com/NixOS/nixpkgs/issues/240591 for more information
     '' // mkOption { default = true; };
 
-    secretsFile = mkOption {
-      type = types.nullOr (
-        types.str
-        // {
-          # We don't want users to be able to pass a path literal here but
-          # it should look like a path.
-          check = it: lib.isString it && lib.types.path.check it;
-        }
-      );
+    environmentFile = mkOption {
+      type = types.nullOr lib.types.path;
       default = null;
       example = "/run/secrets/paperless";
       description = ''
-        Path of a file with extra environment variables to be loaded from disk. This file is not added to the nix store, so it can be used to pass secrets to paperless. Refer to the [documentation](https://docs.paperless-ngx.com/configuration/) for options.
+        Path to a file containing extra paperless config options in the systemd `EnvironmentFile`
+        format. Refer to the [documentation](https://docs.paperless-ngx.com/configuration/) for
+        config options.
 
-        To set a database password set this to a file containing:
+        This can be used to pass secrets to paperless without putting them in the Nix store.
+
+        To set a database password, point `environmentFile` at a file containing:
         ```
         PAPERLESS_DBPASS=<pass>
         ```
