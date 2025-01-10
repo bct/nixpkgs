@@ -89,7 +89,6 @@ in
       wantedBy = [ "multi-user.target" ];
 
       environment = {
-        DOTNET_CONTENTROOT = "/var/lib/${cfg.dataDir}";
         Kestrel__Endpoints__Http__Url = "http://localhost:${toString cfg.port}";
       } // cfg.settings;
 
@@ -114,15 +113,6 @@ in
           "AF_INET6"
         ];
         RestrictNamespaces = true;
-
-        ExecStartPre = pkgs.writeShellScript "lubelogger-prestart" ''
-          cd $STATE_DIRECTORY
-          if [ "$(cat .nixos-lubelogger-version)" != "${cfg.package}" ]; then
-            mkdir -p wwwroot
-            ln -sf ${cfg.package}/lib/lubelogger/wwwroot/* wwwroot/
-            echo "${cfg.package}" > .nixos-lubelogger-version
-          fi
-        '';
       };
     };
 
