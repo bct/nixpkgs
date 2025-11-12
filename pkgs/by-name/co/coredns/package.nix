@@ -17,12 +17,16 @@ let
   hasExternalPlugins = builtins.length externalPlugins > 0;
 
   attrsToSources = attrs: map ({ repo, version, ... }: "${repo}@${version}") attrs;
-  pluginsStringsSorted = lib.sort lib.lessThan (attrsToSources externalPlugins);
-  pluginsHash = builtins.hashString "md5" (builtins.concatStringsSep "/" pluginsStringsSorted);
+  sourcesSorted = lib.sort lib.lessThan (attrsToSources externalPlugins);
 
+  # a fixed-output derivation that retrieves external plugins and their
+  # dependencies in a format that can be used for a Go module proxy.
   pluginGoModules = stdenv.mkDerivation {
     pname = "coredns-plugins-go-modules";
-    version = pluginsHash;
+
+    # ensure that this derivation is rebuilt when the list of plugins
+    # changes, even if the caller forgot to update externalPluginsHash.
+    version = builtins.hashString "md5" (builtins.concatStringsSep "/" sourcesSorted);
 
     nativeBuildInputs = [ go ];
     dontUnpack = true;
@@ -32,36 +36,19 @@ let
       export GOPATH="$TMPDIR/go"
 
       module_path=$(mktemp -d)
-
       cd $module_path
 
       # generate a dummy go module that depends on the desired plugins.
       go mod init _
       ${
-        lib.concatMapStringsSep "\n" (pathVersion:
-          "go mod edit -require ${pathVersion}"
-        ) (attrsToSources externalPlugins)
+        lib.concatMapStringsSep "\n"
+          (source: "go get ${source}")
+          (attrsToSources externalPlugins)
       }
 
-      cat >plugins.go <<END
-        package plugin
-
-        import (
-          ${
-            lib.concatMapStringsSep "\n" ({repo, ...}:
-              "_ \"${repo}\""
-            ) externalPlugins
-          }
-        )
-      END
-
-      # download the plugins & their transitive dependencies.
-      # "go mod tidy" computes and downloads the transitive dependencies,
-      # but it doesn't download the .info files, which causes the final build
-      # to fail.
-      # "go mod download" retrieves the .info files too.
-      go mod tidy
-      go mod download
+      # download the plugins & their transitive dependencies
+      # (including .info files)
+      go mod download all
     '';
 
     installPhase = ''
@@ -209,7 +196,7 @@ buildGoModule (finalAttrs: {
           }
         ];
         # this hash should not need to change when coredns is updated.
-        externalPluginsHash = "sha256-qP6pgV8c54pEIfmpZlBq+Wf0bl7a4o5sJqPho8vygXA=";
+        externalPluginsHash = "sha256-BBMSVf4bC81SqtNwfjB+KkOZxMn93Tsz3ahOsSr7LrI=";
       };
     in runCommand "coredns-external-plugins-test" { } ''
       # the "example" plugin has been registered with coredns.
