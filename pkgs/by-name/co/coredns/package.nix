@@ -5,12 +5,76 @@
   fetchFromGitHub,
   installShellFiles,
   nixosTests,
+  runCommand,
+  go,
+  coredns,
+  vendorHash ? "sha256-W0F8oEm+OpoGEx8GpF3YdoFHwK7pAc3jqF8qe7v5MIQ=",
   externalPlugins ? [ ],
-  vendorHash ? "sha256-pU8INVCKjYfAFOeobM7N1XCMHod7Kz0N5NKwpMpA2lU=",
+  externalPluginsHash ? "",
 }:
 
 let
+  hasExternalPlugins = builtins.length externalPlugins > 0;
+
   attrsToSources = attrs: map ({ repo, version, ... }: "${repo}@${version}") attrs;
+  pluginsStringsSorted = lib.sort lib.lessThan (attrsToSources externalPlugins);
+  pluginsHash = builtins.hashString "md5" (builtins.concatStringsSep "/" pluginsStringsSorted);
+
+  pluginGoModules = stdenv.mkDerivation {
+    pname = "coredns-plugins-go-modules";
+    version = pluginsHash;
+
+    nativeBuildInputs = [ go ];
+    dontUnpack = true;
+
+    buildPhase = ''
+      export GOCACHE=$TMPDIR/go-cache
+      export GOPATH="$TMPDIR/go"
+
+      module_path=$(mktemp -d)
+
+      cd $module_path
+
+      # generate a dummy go module that depends on the desired plugins.
+      go mod init _
+      ${
+        lib.concatMapStringsSep "\n" (pathVersion:
+          "go mod edit -require ${pathVersion}"
+        ) (attrsToSources externalPlugins)
+      }
+
+      cat >plugins.go <<END
+        package plugin
+
+        import (
+          ${
+            lib.concatMapStringsSep "\n" ({repo, ...}:
+              "_ \"${repo}\""
+            ) externalPlugins
+          }
+        )
+      END
+
+      # download the plugins & their transitive dependencies.
+      # "go mod tidy" computes and downloads the transitive dependencies,
+      # but it doesn't download the .info files, which causes the final build
+      # to fail.
+      # "go mod download" retrieves the .info files too.
+      go mod tidy
+      go mod download
+    '';
+
+    installPhase = ''
+      rm -rf "$GOPATH/pkg/mod/cache/download/sumdb"
+      cp -r --reflink=auto "$GOPATH/pkg/mod/cache/download" $out
+    '';
+
+    outputHashMode = "recursive";
+    outputHash = externalPluginsHash;
+    # Handle empty `vendorHash`; avoid error:
+    # empty hash requires explicit hash algorithm.
+    outputHashAlgo = if externalPluginsHash == "" then "sha256" else null;
+  };
 in
 buildGoModule (finalAttrs: {
   pname = "coredns";
@@ -25,6 +89,10 @@ buildGoModule (finalAttrs: {
 
   inherit vendorHash;
 
+  # proxyVendor allows us to combine coredns' dependencies with the
+  # external plugin dependencies, using the GOPROXY env var.
+  proxyVendor = true;
+
   nativeBuildInputs = [ installShellFiles ];
 
   outputs = [
@@ -32,8 +100,10 @@ buildGoModule (finalAttrs: {
     "man"
   ];
 
-  # Override the go-modules fetcher derivation to fetch plugins
-  modBuildPhase = ''
+  # Configure coredns to build in external plugins
+  postConfigure = lib.optionalString hasExternalPlugins ''
+    export GOPROXY="file://$goModules,file://${pluginGoModules}"
+
     cp plugin.cfg plugin.cfg.orig
     ${
       (lib.concatMapStringsSep "\n" (
@@ -75,22 +145,8 @@ buildGoModule (finalAttrs: {
       ) externalPlugins)
     }
     diff -u plugin.cfg.orig plugin.cfg || true
+    GOOS= GOARCH= go generate
     for src in ${toString (attrsToSources externalPlugins)}; do go get $src; done
-    GOOS= GOARCH= go generate
-    go mod tidy
-    go mod vendor
-  '';
-
-  modInstallPhase = ''
-    mv -t vendor go.mod go.sum plugin.cfg
-    cp -r --reflink=auto vendor "$out"
-  '';
-
-  preBuild = ''
-    chmod -R u+w vendor
-    mv -t . vendor/go.{mod,sum} vendor/plugin.cfg
-
-    GOOS= GOARCH= go generate
   '';
 
   postPatch = ''
@@ -125,6 +181,41 @@ buildGoModule (finalAttrs: {
   passthru.tests = {
     kubernetes-single-node = nixosTests.kubernetes.dns-single-node;
     kubernetes-multi-node = nixosTests.kubernetes.dns-multi-node;
+
+    # test that we can build coredns without external plugins.
+    # this helps ensure that tests.external-plugins is a valid test.
+    no-plugins = runCommand "coredns-no-plugins-test" { } ''
+      # the "example" plugin has _not_ been registered with coredns.
+      ${coredns}/bin/coredns -plugins > $out
+      if cat $out | grep example >/dev/null; then
+        echo 'coredns -plugins unexpectedly contained "example"'
+        exit 1
+      fi
+    '';
+
+    # test that we can build coredns with external plugins
+    external-plugins = let
+      coredns-with-plugins = coredns.override {
+        externalPlugins = [
+          {
+            name = "example";
+            repo = "github.com/coredns/example";
+            # the version string can be retrieved like this:
+            # nix run nixpkgs#go -- \
+            #   list -m -versions -json github.com/coredns/example@master \
+            #   | grep Version
+            version = "v0.0.0-20200925060636-a998e071a3a3";
+            position = "start-of-file";
+          }
+        ];
+        # this hash should not need to change when coredns is updated.
+        externalPluginsHash = "sha256-qP6pgV8c54pEIfmpZlBq+Wf0bl7a4o5sJqPho8vygXA=";
+      };
+    in runCommand "coredns-external-plugins-test" { } ''
+      # the "example" plugin has been registered with coredns.
+      ${coredns-with-plugins}/bin/coredns -plugins > $out
+      cat $out | grep example >/dev/null
+    '';
   };
 
   meta = {
