@@ -47,32 +47,11 @@ let
 
       ${
         lib.concatMapStringsSep "\n"
-          (source: "go get -t ${source}")
+          (source: "go get ${source}")
           (attrsToSources externalPlugins)
       }
 
-      # in order to run "go mod tidy" we need to have a file that uses the modules
-      # we're importing.
-      cat >main.go <<END
-        package main
-
-        import (
-          ${
-            lib.concatMapStringsSep "\n" ({repo, ...}:
-              "_ \"${repo}\""
-            ) externalPlugins
-          }
-        )
-      END
-
       # download the plugins & their transitive dependencies.
-
-      # "go mod tidy" computes and downloads the transitive dependencies,
-      # but it doesn't download the .info files.
-      go mod tidy
-
-      # "go mod download" downloads the .info files, but it doesn't download
-      # all transitive dependencies.
       go mod download all
     '';
 
@@ -222,7 +201,7 @@ buildGoModule (finalAttrs: {
           }
         ];
         # this hash should not need to change when coredns is updated.
-        externalPluginsHash = "sha256-gB/l1E16a9Tu0ykPd5hM6Bw3UIN8Hh3hKreyf2FdOZ8=";
+        externalPluginsHash = "sha256-JanJ1aDOZRhk8QHjwpU1fDglL6CNFV4/dB1oU4+NnUQ=";
       };
     in runCommand "coredns-external-plugins-test" { } ''
       # the "example" plugin has been registered with coredns.
@@ -241,7 +220,7 @@ buildGoModule (finalAttrs: {
           }
         ];
         # this hash should not need to change when coredns is updated.
-        externalPluginsHash = "sha256-VD+TmAckKJydJOpkfkJqLMAUx5QejR0uN3ka4hWchkg=";
+        externalPluginsHash = "sha256-nse4svEEgRNO0mkIFc0NYowFdCTVDLIzYH4pFcs1DrE=";
       };
     in runCommand "coredns-external-plugins-test" { } ''
       # the "wgsd" plugin has been registered with coredns.
