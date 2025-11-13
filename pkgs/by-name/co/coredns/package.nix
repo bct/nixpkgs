@@ -40,14 +40,39 @@ let
 
       # generate a dummy go module that depends on the desired plugins.
       go mod init _
+
+      # using go 1.16 turns off module pruning, which ensures that we
+      # download _all_ dependencies.
+      go mod edit -go 1.16
+
       ${
         lib.concatMapStringsSep "\n"
-          (source: "go get ${source}")
+          (source: "go get -t ${source}")
           (attrsToSources externalPlugins)
       }
 
-      # download the plugins & their transitive dependencies
-      # (including .info files)
+      # in order to run "go mod tidy" we need to have a file that uses the modules
+      # we're importing.
+      cat >main.go <<END
+        package main
+
+        import (
+          ${
+            lib.concatMapStringsSep "\n" ({repo, ...}:
+              "_ \"${repo}\""
+            ) externalPlugins
+          }
+        )
+      END
+
+      # download the plugins & their transitive dependencies.
+
+      # "go mod tidy" computes and downloads the transitive dependencies,
+      # but it doesn't download the .info files.
+      go mod tidy
+
+      # "go mod download" downloads the .info files, but it doesn't download
+      # all transitive dependencies.
       go mod download all
     '';
 
@@ -89,8 +114,6 @@ buildGoModule (finalAttrs: {
 
   # Configure coredns to build in external plugins
   postConfigure = lib.optionalString hasExternalPlugins ''
-    export GOPROXY="file://$goModules,file://${pluginGoModules}"
-
     cp plugin.cfg plugin.cfg.orig
     ${
       (lib.concatMapStringsSep "\n" (
@@ -132,7 +155,10 @@ buildGoModule (finalAttrs: {
       ) externalPlugins)
     }
     diff -u plugin.cfg.orig plugin.cfg || true
+
     GOOS= GOARCH= go generate
+
+    export GOPROXY="file://$goModules,file://${pluginGoModules}"
     for src in ${toString (attrsToSources externalPlugins)}; do go get $src; done
   '';
 
@@ -196,12 +222,31 @@ buildGoModule (finalAttrs: {
           }
         ];
         # this hash should not need to change when coredns is updated.
-        externalPluginsHash = "sha256-BBMSVf4bC81SqtNwfjB+KkOZxMn93Tsz3ahOsSr7LrI=";
+        externalPluginsHash = "sha256-gB/l1E16a9Tu0ykPd5hM6Bw3UIN8Hh3hKreyf2FdOZ8=";
       };
     in runCommand "coredns-external-plugins-test" { } ''
       # the "example" plugin has been registered with coredns.
       ${coredns-with-plugins}/bin/coredns -plugins > $out
       cat $out | grep example >/dev/null
+    '';
+
+    # TODO: delete me
+    wgsd = let
+      coredns-with-plugins = coredns.override {
+        externalPlugins = [
+          {
+            name = "wgsd";
+            repo = "github.com/jwhited/wgsd";
+            version = "v0.3.6";
+          }
+        ];
+        # this hash should not need to change when coredns is updated.
+        externalPluginsHash = "sha256-VD+TmAckKJydJOpkfkJqLMAUx5QejR0uN3ka4hWchkg=";
+      };
+    in runCommand "coredns-external-plugins-test" { } ''
+      # the "wgsd" plugin has been registered with coredns.
+      ${coredns-with-plugins}/bin/coredns -plugins > $out
+      cat $out | grep wgsd >/dev/null
     '';
   };
 
